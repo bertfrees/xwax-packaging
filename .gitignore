@@ -1,12 +1,15 @@
 TAGS
 xwax
 mktimecode
+xwax-client
 *.o
 *.d
 .config
 .version
 dist
 
+tests/observer
+tests/external
 tests/cues
 tests/external
 tests/library

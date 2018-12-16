@@ -27,6 +27,7 @@ SDL_CFLAGS ?= `sdl-config --cflags`
 SDL_LIBS ?= `sdl-config --libs` -lSDL_ttf
 ALSA_LIBS ?= -lasound
 JACK_LIBS ?= -ljack
+LIBLO_LIBS ?= -llo
 
 # Installation paths
 
@@ -39,14 +40,15 @@ DOCDIR ?= $(PREFIX)/share/doc
 
 # Build flags
 
-CFLAGS ?= -O3
+CFLAGS ?= -g -O3
 CFLAGS += -Wall
 CPPFLAGS += -MMD
 LDFLAGS ?= -O3
 
 # Core objects and libraries
 
-OBJS = controller.o \
+OBJS = osc.o \
+	controller.o \
 	cues.o \
 	deck.o \
 	device.o \
@@ -104,7 +106,7 @@ DEPS = $(OBJS:.o=.d) $(TEST_OBJS:.o=.d) mktimecode.d
 # Rules
 
 .PHONY:		all
-all:		xwax mktimecode tests
+all:		xwax mktimecode xwax-client tests
 
 # Dynamic versioning
 
@@ -117,7 +119,7 @@ VERSION = $(shell ./mkversion)
 # Main binary
 
 xwax:		$(OBJS)
-xwax:		LDLIBS += $(SDL_LIBS) $(DEVICE_LIBS) -lm
+xwax:		LDLIBS += $(SDL_LIBS) $(DEVICE_LIBS) $(LIBLO_LIBS) -lm
 xwax:		LDFLAGS += -pthread
 
 interface.o:	CFLAGS += $(SDL_CFLAGS)
@@ -132,12 +134,19 @@ xwax.o:		.version
 mktimecode:	mktimecode.o
 mktimecode:	LDLIBS  += -lm
 
+# Client
+
+xwax-client:	xwax-client.o
+xwax-client: LDLIBS += $(LIBLO_LIBS)
+
 # Install to system
 
 .PHONY:		install
 install:
 		$(INSTALL) -D xwax $(DESTDIR)$(BINDIR)/xwax
+		$(INSTALL) -D xwax-client $(DESTDIR)$(BINDIR)/xwax-client
 		$(INSTALL) -D scan $(DESTDIR)$(EXECDIR)/xwax-scan
+		$(INSTALL) -D bpm-scan $(DESTDIR)$(EXECDIR)/xwax-bpm-scan
 		$(INSTALL) -D import $(DESTDIR)$(EXECDIR)/xwax-import
 		$(INSTALL) -D -m 0644 xwax.1 $(DESTDIR)$(MANDIR)/man1/xwax.1
 		$(INSTALL) -D -m 0644 CHANGES $(DESTDIR)$(DOCDIR)/xwax/CHANGES
@@ -165,8 +174,9 @@ tests/cues:	tests/cues.o cues.o
 
 tests/external:	tests/external.o external.o
 
-tests/library:	tests/library.o excrate.o external.o index.o library.o rig.o status.o thread.o track.o
+tests/library:	tests/library.o excrate.o external.o index.o library.o rig.o status.o thread.o osc.o player.o deck.o cues.o timecoder.o realtime.o device.o lut.o controller.o track.o
 tests/library:	LDFLAGS += -pthread
+tests/library:	LDFLAGS += $(LIBLO_LIBS)
 
 tests/midi:	tests/midi.o midi.o
 tests/midi:	LDLIBS += $(ALSA_LIBS)
@@ -177,10 +187,11 @@ tests/status:	tests/status.o status.o
 
 tests/timecoder:	tests/timecoder.o lut.o timecoder.o
 
-tests/track:	tests/track.o excrate.o external.o index.o library.o rig.o status.o thread.o track.o
+tests/track:	tests/track.o excrate.o external.o index.o library.o rig.o status.o thread.o osc.o player.o deck.o cues.o timecoder.o realtime.o device.o lut.o controller.o track.o
 tests/track:	LDFLAGS += -pthread
 tests/track:	LDLIBS += -lm
-
+tests/track:	LDFLAGS += $(LIBLO_LIBS)
+ 
 tests/ttf.o:	tests/ttf.c  # not needed except to workaround Make 3.81
 tests/ttf.o:	CFLAGS += $(SDL_CFLAGS)
 
@@ -189,6 +200,7 @@ tests/ttf:	LDLIBS += $(SDL_LIBS)
 .PHONY:		clean
 clean:
 		rm -f xwax \
+			xwax-client xwax-client.o \
 			$(OBJS) $(DEPS) \
 			$(TESTS) $(TEST_OBJS) \
 			mktimecode mktimecode.o \
