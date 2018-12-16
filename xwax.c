@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2016 Mark Hills <mark@xwax.org>
+ * Copyright (C) 2018 Mark Hills <mark@xwax.org>
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -18,6 +18,7 @@
  */
 
 #include <assert.h>
+#include <locale.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -40,6 +41,7 @@
 #include "rig.h"
 #include "timecoder.h"
 #include "track.h"
+#include "osc.h"
 #include "xwax.h"
 
 #define DEFAULT_OSS_BUFFERS 8
@@ -57,7 +59,7 @@
 #define ARRAY_SIZE(x) (sizeof(x) / sizeof(*x))
 
 char *banner = "xwax " VERSION \
-    " (C) Copyright 2016 Mark Hills <mark@xwax.org>";
+    " (C) Copyright 2018 Mark Hills <mark@xwax.org>";
 
 size_t ndeck;
 struct deck deck[3];
@@ -166,7 +168,7 @@ static int commit_deck(void)
 
     d = &deck[ndeck];
 
-    r = deck_init(d, &rt, timecode, importer, speed, phono, protect);
+    r = deck_init(d, &rt, timecode, importer, speed, phono, protect, ndeck);
     if (r == -1)
         return -1;
 
@@ -174,6 +176,10 @@ static int commit_deck(void)
 
     for (n = 0; n < nctl; n++)
         controller_add_deck(&ctl[n], d);
+
+    /* Connect this deck to OSC server */
+
+    osc_add_deck();
 
     ndeck++;
 
@@ -203,7 +209,14 @@ int main(int argc, char *argv[])
 
     fprintf(stderr, "%s\n\n" NOTICE "\n\n", banner);
 
+    if (setlocale(LC_ALL, "") == NULL) {
+        fprintf(stderr, "Could not honour the local encoding\n");
+        return -1;
+    }
+
     if (thread_global_init() == -1)
+        return -1;
+    if (library_global_init() == -1)
         return -1;
 
     if (rig_init() == -1)
@@ -598,6 +611,10 @@ int main(int argc, char *argv[])
     }
 
     rc = EXIT_FAILURE; /* until clean exit */
+    
+    if (osc_start((struct deck *)&deck, &library) == -1)
+        return -1;
+    osc_start_updater_thread();
 
     /* Order is important: launch realtime thread first, then mlock.
      * Don't mlock the interface, use sparingly for audio threads */
@@ -634,6 +651,8 @@ out_rt:
     library_clear(&library);
     rt_clear(&rt);
     rig_clear();
+    osc_stop();
+    library_global_clear();
     thread_global_clear();
 
     if (rc == EXIT_SUCCESS)

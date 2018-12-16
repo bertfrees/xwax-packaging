@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2016 Mark Hills <mark@xwax.org>
+ * Copyright (C) 2018 Mark Hills <mark@xwax.org>
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -53,7 +53,7 @@ struct deck {
 
 int deck_init(struct deck *deck, struct rt *rt,
               struct timecode_def *timecode, const char *importer,
-              double speed, bool phono, bool protect);
+              double speed, bool phono, bool protect, size_t ndeck);
 void deck_clear(struct deck *deck);
 
 bool deck_is_locked(const struct deck *deck);

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2016 Mark Hills <mark@xwax.org>
+ * Copyright (C) 2018 Mark Hills <mark@xwax.org>
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -19,6 +19,7 @@
 
 #include <assert.h>
 #include <errno.h>
+#include <iconv.h>
 #include <math.h>
 #include <pthread.h>
 #include <stdbool.h>
@@ -39,6 +40,7 @@
 #include "selector.h"
 #include "status.h"
 #include "timecoder.h"
+#include "osc.h"
 #include "xwax.h"
 
 /* Screen refresh time in milliseconds */
@@ -47,8 +49,8 @@
 
 /* Font definitions */
 
-#define FONT "DejaVuSans.ttf"
-#define FONT_SIZE 10
+#define FONT "DejaVuSans-Bold.ttf"
+#define FONT_SIZE 12
 #define FONT_SPACE 15
 
 #define EM_FONT "DejaVuSans-Oblique.ttf"
@@ -57,15 +59,15 @@
 #define BIG_FONT_SIZE 14
 #define BIG_FONT_SPACE 19
 
-#define CLOCK_FONT FONT
+#define CLOCK_FONT "DejaVuSans.ttf"
 #define CLOCK_FONT_SIZE 32
 
 #define DECI_FONT FONT
 #define DECI_FONT_SIZE 20
 
-#define DETAIL_FONT "DejaVuSansMono-Bold.ttf"
-#define DETAIL_FONT_SIZE 9
-#define DETAIL_FONT_SPACE 12
+#define DETAIL_FONT "DejaVuSansMono.ttf"
+#define DETAIL_FONT_SIZE 12
+#define DETAIL_FONT_SPACE 15
 
 /* Screen size (pixels) */
 
@@ -80,7 +82,7 @@
 
 #define BORDER 12
 #define SPACER 8
-#define HALF_SPACER 4
+#define HALF_SPACER 2
 
 #define CURSOR_WIDTH 4
 
@@ -97,7 +99,7 @@
 #define SEARCH_HEIGHT (FONT_SPACE)
 #define STATUS_HEIGHT (DETAIL_FONT_SPACE)
 
-#define BPM_WIDTH 32
+#define BPM_WIDTH 40
 #define SORT_WIDTH 21
 #define RESULTS_ARTIST_WIDTH 200
 
@@ -169,6 +171,7 @@ static int width = DEFAULT_WIDTH, height = DEFAULT_HEIGHT,
     meter_scale = DEFAULT_METER_SCALE;
 static Uint32 video_flags = SDL_RESIZABLE;
 static float scale = DEFAULT_SCALE;
+static iconv_t utf;
 static pthread_t ph;
 static struct selector selector;
 static struct observer on_status, on_selector;
@@ -387,14 +390,17 @@ static Uint32 palette(SDL_Surface *sf, SDL_Color *col)
 }
 
 /*
- * Draw text at the given coordinates
+ * Draw text
+ *
+ * Render the string "buf" text inside the given "rect".  If "locale"
+ * is set then a conversion from the system locale is done.
  *
  * Return: width of text drawn
  */
 
-static int draw_text(SDL_Surface *sf, const struct rect *rect,
-                     const char *buf, TTF_Font *font,
-                     SDL_Color fg, SDL_Color bg)
+static int do_draw_text(SDL_Surface *sf, const struct rect *rect,
+                        const char *buf, TTF_Font *font,
+                        SDL_Color fg, SDL_Color bg, bool locale)
 {
     SDL_Surface *rendered;
     SDL_Rect dst, src, fill;
@@ -408,7 +414,27 @@ static int draw_text(SDL_Surface *sf, const struct rect *rect,
         src.h = 0;
 
     } else {
-        rendered = TTF_RenderText_Shaded(font, buf, fg, bg);
+        if (!locale) {
+            rendered = TTF_RenderText_Shaded(font, buf, fg, bg);
+        } else {
+            char ubuf[256], /* fixed buffer is reasonable for rendering */
+                *in, *out;
+            size_t len, fill;
+
+            out = ubuf;
+            fill = sizeof(ubuf) - 1; /* always leave space for \0 */
+
+            if (iconv(utf, NULL, NULL, &out, &fill) == -1)
+                abort();
+
+            in = strdupa(buf);
+            len = strlen(in);
+
+            (void)iconv(utf, &in, &len, &out, &fill);
+            *out = '\0';
+
+            rendered = TTF_RenderUTF8_Shaded(font, ubuf, fg, bg);
+        }
 
         src.x = 0;
         src.y = 0;
@@ -441,6 +467,20 @@ static int draw_text(SDL_Surface *sf, const struct rect *rect,
     }
 
     return src.w;
+}
+
+static int draw_text(SDL_Surface *sf, const struct rect *rect,
+                     const char *buf, TTF_Font *font,
+                     SDL_Color fg, SDL_Color bg)
+{
+    return do_draw_text(sf, rect, buf, font, fg, bg, false);
+}
+
+static int draw_text_in_locale(SDL_Surface *sf, const struct rect *rect,
+                               const char *buf, TTF_Font *font,
+                               SDL_Color fg, SDL_Color bg)
+{
+    return do_draw_text(sf, rect, buf, font, fg, bg, true);
 }
 
 /*
@@ -609,25 +649,37 @@ static void draw_bpm_field(SDL_Surface *surface, const struct rect *rect,
  */
 
 static void draw_record(SDL_Surface *surface, const struct rect *rect,
-                        const struct record *record)
+                        struct deck *deck)
 {
     struct rect artist, title, left, right;
+    struct record *record = deck->record;
 
     split(*rect, from_top(BIG_FONT_SPACE, 0), &artist, &title);
-    draw_text(surface, &artist, record->artist,
-              big_font, text_col, background_col);
+    draw_text_in_locale(surface, &artist, record->artist,
+                        big_font, text_col, background_col);
 
     /* Layout changes slightly if BPM is known */
 
     if (show_bpm(record->bpm)) {
         split(title, from_left(BPM_WIDTH, 0), &left, &right);
-        draw_bpm(surface, &left, record->bpm, background_col);
+
+        // take note of pitch so we can calculate the avarage later on
+        if (deck->player.currentPitchSample == deck->player.pitchSampleAmount)
+            deck->player.currentPitchSample = 0;
+        deck->player.pitchSamples[ deck->player.currentPitchSample ] = deck->player.pitch ;
+        //printf("index: %f, value: %d\n", pitchSamplesA[currentPitchSampleA], currentPitchSampleA );
+        deck->player.currentPitchSample++;
+
+        double nearest = roundf( player_getAveragePitch(&deck->player) * record->bpm * 10) / (record->bpm * 10);
+
+        draw_bpm(surface, &left, record->bpm * nearest, background_col);
 
         split(right, from_left(HALF_SPACER, 0), &left, &title);
         draw_rect(surface, &left, background_col);
     }
 
-    draw_text(surface, &title, record->title, font, text_col, background_col);
+    draw_text_in_locale(surface, &title, record->title,
+                        font, text_col, background_col);
 }
 
 /*
@@ -1007,7 +1059,7 @@ static void draw_deck_status(SDL_Surface *surface,
         c += sprintf(c, "        ");
     }
 
-    sprintf(c, "pitch:%+0.2f (sync %0.2f %+.5fs = %+0.2f)  %s%s",
+    sprintf(c, "pitch:%+0.2f (sync %0.2f %+.5fs = %+0.5f)  %s%s",
             pl->pitch,
             pl->sync_pitch,
             pl->last_difference,
@@ -1039,7 +1091,7 @@ static void draw_deck(SDL_Surface *surface, const struct rect *rect,
     if (rest.h < 160)
         rest = *rect;
     else
-        draw_record(surface, &track, deck->record);
+        draw_record(surface, &track, deck);
 
     split(rest, from_top(CLOCK_FONT_SIZE * 2, SPACER), &top, &lower);
     if (lower.h < 64)
@@ -1047,11 +1099,12 @@ static void draw_deck(SDL_Surface *surface, const struct rect *rect,
     else
         draw_deck_top(surface, &top, pl, t);
 
-    split(lower, from_bottom(FONT_SPACE, SPACER), &meters, &status);
+    /*split(lower, from_bottom(FONT_SPACE, SPACER), &meters, &status);
     if (meters.h < 64)
         meters = lower;
     else
-        draw_deck_status(surface, &status, deck);
+        draw_deck_status(surface, &status, deck);*/
+    meters = lower;
 
     draw_meters(surface, &meters, t, position, meter_scale);
 }
@@ -1093,7 +1146,7 @@ static void draw_status(SDL_Surface *sf, const struct rect *rect)
         bg = background_col;
     }
 
-    draw_text(sf, rect, status(), detail_font, fg, bg);
+    draw_text_in_locale(sf, rect, status(), detail_font, fg, bg);
 }
 
 /*
@@ -1183,11 +1236,11 @@ static void draw_listbox(const struct listbox *lb, SDL_Surface *surface,
                          const struct rect rect,
                          const void *context, draw_row_t draw)
 {
-    struct rect left, remain;
+    struct rect scrollbar, remain;
     unsigned int row;
 
-    split(rect, from_left(SCROLLBAR_SIZE, SPACER), &left, &remain);
-    draw_scroll_bar(surface, &left, lb);
+    split(rect, from_right(SCROLLBAR_SIZE, SPACER), &remain, &scrollbar);
+    draw_scroll_bar(surface, &scrollbar, lb);
 
     row = 0;
 
@@ -1229,7 +1282,8 @@ static void draw_crate_row(const void *context,
         col = text_col;
 
     if (!selected) {
-        draw_text(surface, &rect, crate->name, font, col, background_col);
+        draw_text_in_locale(surface, &rect, crate->name,
+                            font, col, background_col);
         return;
     }
 
@@ -1258,7 +1312,7 @@ static void draw_crate_row(const void *context,
                    dim(alert_col, 2), selected_col);
     }
 
-    draw_text(surface, &left, crate->name, font, col, selected_col);
+    draw_text_in_locale(surface, &left, crate->name, font, col, selected_col);
 }
 
 /*
@@ -1299,11 +1353,11 @@ static void draw_record_row(const void *context,
     draw_rect(surface, &left, col);
 
     split(right, from_left(width, 0), &left, &right);
-    draw_text(surface, &left, record->artist, font, text_col, col);
+    draw_text_in_locale(surface, &left, record->artist, font, text_col, col);
 
     split(right, from_left(SPACER, 0), &left, &right);
     draw_rect(surface, &left, col);
-    draw_text(surface, &right, record->title, font, text_col, col);
+    draw_text_in_locale(surface, &right, record->title, font, text_col, col);
 }
 
 /*
@@ -1346,13 +1400,7 @@ static void draw_library(SDL_Surface *surface, const struct rect *rect,
     draw_search(surface, &rsearch, sel);
     selector_set_lines(sel, rows);
 
-    split(rlists, columns(0, 4, SPACER), &rcrates, &rrecords);
-    if (rcrates.w > LIBRARY_MIN_WIDTH) {
-        draw_index(surface, rrecords, sel);
-        draw_crates(surface, rcrates, sel);
-    } else {
-        draw_index(surface, *rect, sel);
-    }
+    draw_index(surface, rlists, sel);
 }
 
 /*
@@ -1418,14 +1466,15 @@ static bool handle_key(SDLKey key, SDLMod mod)
         return true;
 
     } else if (key == SDLK_TAB) {
-        if (mod & KMOD_CTRL) {
-            if (mod & KMOD_SHIFT)
-                selector_rescan(sel);
-            else
-                selector_toggle_order(sel);
-        } else {
-            selector_toggle(sel);
-        }
+        selector_toggle(sel);
+        return true;
+
+    } else if (key == SDLK_LCTRL) {
+        selector_rescan(sel);
+        return true;
+
+    } else if (key == SDLK_LSHIFT) {
+        selector_toggle_order(sel);
         return true;
 
     } else if ((key == SDLK_EQUALS) || (key == SDLK_PLUS)) {
@@ -1433,6 +1482,8 @@ static bool handle_key(SDLKey key, SDLMod mod)
 
         if (meter_scale < 0)
             meter_scale = 0;
+            
+        osc_send_scale(meter_scale);            
 
         fprintf(stderr, "Meter scale decreased to %d\n", meter_scale);
 
@@ -1441,6 +1492,8 @@ static bool handle_key(SDLKey key, SDLMod mod)
 
         if (meter_scale > MAX_METER_SCALE)
             meter_scale = MAX_METER_SCALE;
+            
+        osc_send_scale(meter_scale);
 
         fprintf(stderr, "Meter scale increased to %d\n", meter_scale);
 
@@ -1475,8 +1528,10 @@ static bool handle_key(SDLKey key, SDLMod mod)
             } else switch(func) {
             case FUNC_LOAD:
                 re = selector_current(sel);
-                if (re != NULL)
+                if (re != NULL) {
+                    osc_send_track_load(de);
                     deck_load(de, re);
+                }
                 break;
 
             case FUNC_RECUE:
@@ -1643,11 +1698,12 @@ static int interface_main(void)
         /* Split the display into the various areas. If an area is too
          * small, abandon any actions to happen in that area. */
 
-        split(rworkspace, from_bottom(STATUS_HEIGHT, SPACER), &rtmp, &rstatus);
+        /*split(rworkspace, from_bottom(STATUS_HEIGHT, SPACER), &rtmp, &rstatus);
         if (rtmp.h < 128 || rtmp.w < 0) {
             rtmp = rworkspace;
             status_update = false;
-        }
+        }*/
+        rtmp = rworkspace;
 
         split(rtmp, from_top(PLAYER_HEIGHT, SPACER), &rplayers, &rlibrary);
         if (rlibrary.h < LIBRARY_MIN_HEIGHT || rlibrary.w < LIBRARY_MIN_WIDTH) {
@@ -1666,8 +1722,8 @@ static int interface_main(void)
         if (library_update)
             draw_library(surface, &rlibrary, &selector);
 
-        if (status_update)
-            draw_status(surface, &rstatus);
+        /*if (status_update)
+            draw_status(surface, &rstatus);*/
 
         if (decks_update)
             draw_decks(surface, &rplayers, deck, ndeck, meter_scale);
@@ -1834,6 +1890,12 @@ int interface_start(struct library *lib, const char *geo, bool decor)
     if (load_fonts() == -1)
         return -1;
 
+    utf = iconv_open("UTF8", "");
+    if (utf == (iconv_t)-1) {
+        perror("iconv_open");
+        return -1;
+    }
+
     fprintf(stderr, "Launching interface thread...\n");
 
     if (pthread_create(&ph, NULL, launch, NULL)) {
@@ -1865,6 +1927,9 @@ void interface_stop(void)
     ignore(&on_selector);
     selector_clear(&selector);
     clear_fonts();
+
+    if (iconv_close(utf) == -1)
+        abort();
 
     TTF_Quit();
     SDL_Quit();

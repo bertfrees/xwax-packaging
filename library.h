@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2016 Mark Hills <mark@xwax.org>
+ * Copyright (C) 2018 Mark Hills <mark@xwax.org>
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -56,6 +56,9 @@ struct library {
     size_t crates;
 };
 
+int library_global_init(void);
+void library_global_clear(void);
+
 void listing_init(struct listing *l);
 void listing_clear(struct listing *l);
 struct record* listing_add(struct listing *l, struct record *r);
@@ -63,6 +66,7 @@ struct record* listing_add(struct listing *l, struct record *r);
 int library_init(struct library *li);
 void library_clear(struct library *li);
 
+struct record* library_add(struct library *l, struct record *d);
 struct record* get_record(char *line);
 
 int library_import(struct library *lib, const char *scan, const char *path);

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2016 Mark Hills <mark@xwax.org>
+ * Copyright (C) 2018 Mark Hills <mark@xwax.org>
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -31,6 +31,7 @@
 #include "realtime.h"
 #include "rig.h"
 #include "status.h"
+#include "osc.h"
 #include "track.h"
 
 #define RATE 44100
@@ -39,6 +40,7 @@
 #define TRACK_BLOCK_PCM_BYTES (TRACK_BLOCK_SAMPLES * SAMPLE)
 
 #define _STR(tok) #tok
+#define STR(tok) _STR(tok)
 #define STR(tok) _STR(tok)
 
 static struct list tracks = LIST_INIT(tracks);
@@ -447,6 +449,8 @@ static void stop_import(struct track *t)
 
     if (WIFEXITED(status) && WEXITSTATUS(status) == EXIT_SUCCESS) {
         fprintf(stderr, "Track import completed\n");
+        osc_send_ppm_block(t);
+        fprintf(stderr, "Sent ppm to OSC\n");
     } else {
         fprintf(stderr, "Track import completed with status %d\n", status);
         if (!t->terminated)

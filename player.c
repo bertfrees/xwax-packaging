@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2016 Mark Hills <mark@xwax.org>
+ * Copyright (C) 2018 Mark Hills <mark@xwax.org>
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -73,18 +73,25 @@ static inline double cubic_interpolate(signed short y[4], double mu)
  * Return: Random dither, between -0.5 and 0.5
  */
 
-double dither(void)
+static double dither(void)
 {
-    short bit;
-    static short x = 0xbabe;
+    unsigned int bit, v;
+    static unsigned int x = 0xbeefface;
 
-    /* Use a 16-bit maximal-length LFSR as our random number.
-     * This is faster than rand() */
+    /* Maximum length LFSR sequence with 32-bit state */
 
-    bit = (x ^ (x >> 2) ^ (x >> 3) ^ (x >> 5)) & 1;
-    x = x >> 1 | (bit << 15);
+    bit = (x ^ (x >> 1) ^ (x >> 21) ^ (x >> 31)) & 1;
+    x = x << 1 | bit;
 
-    return (double)x / 65536 - 0.5; /* not quite whole range */
+    /* We can adjust the balance between randomness and performance
+     * by our chosen bit permutation; here we use a 12 bit subset
+     * of the state */
+
+    v = (x & 0x0000000f)
+        | ((x & 0x000f0000) >> 12)
+        | ((x & 0x0f000000) >> 16);
+
+    return (double)v / 4096 - 0.5; /* not quite whole range */
 }
 
 /*
@@ -189,7 +196,7 @@ void player_set_timecoder(struct player *pl, struct timecoder *tc)
  * Post: player is initialised
  */
 
-void player_init(struct player *pl, unsigned int sample_rate,
+void player_init(struct player *pl,struct deck *deck, unsigned int sample_rate,
                  struct track *track, struct timecoder *tc)
 {
     assert(track != NULL);
@@ -209,6 +216,14 @@ void player_init(struct player *pl, unsigned int sample_rate,
     pl->pitch = 0.0;
     pl->sync_pitch = 1.0;
     pl->volume = 0.0;
+
+    pl->deck = deck;
+
+    pl->currentPitchSample = 0;
+    pl->pitchSampleAmount = 160;
+    int i;
+    for(i = 0; i < pl->pitchSampleAmount; i++)
+        pl->pitchSamples[i] = -1.0;
 }
 
 /*
@@ -245,6 +260,12 @@ bool player_toggle_timecode_control(struct player *pl)
     if (pl->timecode_control)
         pl->recalibrate = true;
     return pl->timecode_control;
+}
+
+void player_set_pitch(struct player *pl, const float pitch)
+{
+    pl->timecode_control = false;
+    pl->pitch = pitch;
 }
 
 void player_set_internal_playback(struct player *pl)
@@ -341,6 +362,7 @@ static int sync_to_timecode(struct player *pl)
     signed int timecode;
 
     timecode = timecoder_get_position(pl->timecoder, &when);
+
 
     /* Instruct the caller to disconnect the timecoder if the needle
      * is outside the 'safe' zone of the record */
@@ -476,4 +498,27 @@ void player_collect(struct player *pl, signed short *pcm, unsigned samples)
 
     pl->position += r;
     pl->volume = target_volume;
+}
+
+// sample to achieve smoother bpm calculation according to pitch speed
+
+/*int i;
+for (i = 0; i < pitchSampleAmount, i++) {
+    pitchSamplesA[i] = -1.0;
+}*/
+double player_getAveragePitch(struct player *pl){
+    double sum = 0;
+    // in case the sample array isnt full yet
+    double amount = 0;
+    int i;
+    int j = pl->pitchSampleAmount;
+    for ( i = 0; i < j; i++)
+    {
+        if ( pl->pitchSamples[i] != -1.0 )
+        {
+            amount = amount + 1.0;
+            sum += pl->pitchSamples[i];
+        }
+    }
+    return sum/amount;
 }
