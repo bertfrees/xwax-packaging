@@ -1,3 +1,9 @@
+xwax (1.7-2) unstable; urgency=medium
+
+  [ Bert Frees ]
+  * New upstream branch 'osc'
+  * debian/control: add Build-Depends: liblo-dev
+
 xwax (1.7-1) unstable; urgency=medium
 
   * Team upload.
